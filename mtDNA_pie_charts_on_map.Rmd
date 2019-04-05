@@ -1,0 +1,177 @@
+---
+title: "Pie_chart_maps"
+author: "Phil Morin"
+date: "`r format(Sys.time(), '%d.%m.%Y')`"
+output:
+  word_document:
+    toc: yes
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Scripts to generate ocean map and place pie-charts of haplotype frequencies by population.
+
+install latest version of strataG from github
+ make sure you have Rtools installed
+  if (!require('devtools')) install.packages('devtools')
+ install from GitHub
+devtools::install_github('ericarcher/strataG')
+ this will take a while to load (~5 min.)
+
+Tutorial on Scatterpie: # https://www.gl-li.com/2018/01/17/create-pie-plots-on-a-map-in-r/
+https://cran.r-project.org/web/packages/scatterpie/vignettes/scatterpie.html
+
+## Load packages
+```{r echo=TRUE, results='hide', message=FALSE, warning=FALSE}
+rm(list = ls())
+options(stringsAsFactors = F, mc.cores = 2)
+require(strataG)
+require(data.table)
+require(tidyr)
+require(ggplot2)
+require(scatterpie)
+```
+
+
+## set file and strata names, and import data files
+```{r}
+stratum <- "Wcoast4" #stratum by which to stratify in downstream analyses
+  #Can load strata and sequences once, then change stratum for different analyses
+  #MUST do "stratify" below to change to the new stratum (or "scheme" in eia terms).
+description <- "Ppho_mtDNA_"
+
+#and load data
+strata.df <- readGenData("~/Documents/Mol_Ecol_Lab/_Projects/\ Harbor_Porpoise/SNP_analysis/Q_Ppho_samples_strata_270618.csv") #strata file with rownames = sampleID's 
+  #(with column heading "id"), columns = stratifications
+  #one column should indicate the haplotype ID's as found in the sequence file (all samples MUST have 
+  # haplotype ID's and be labeled with column heading "haplotype"
+
+# Load unique haplotype sequence data as fasta file
+mtdna <- read.fasta("/Users/phil.morin/Documents/Mol_Ecol_Lab/_Projects/\ Harbor_Porpoise/mtDNA\ data/QAQC\ documents/mtDNA_QAQC_131216/Ppho_haplotypes_141216_analysis_sequences.fasta")
+
+# Load matrix of haplotype frequencies by population (derived from pivot table of haplotypes and populations in strata file)
+
+hap_freq <- read.csv("Wcoast4_hapfreq_by_pop_noPdal.csv")
+
+# load matrix of lat/lon positions for pie charts by population 
+positions <- read.csv("Ppho_pop_ave_latlon.csv")
+
+Ploidy <- 1 #1 for mtDNA sequence, 2 for genotypes
+num.cores <- 2
+```
+
+## Create gtypes object. 
+Need to specify the sample id and haplotype columns from the strata file, so that haplotypes match the haplotype names in the fasta file.
+```{r}
+rownames(strata.df) <- strata.df$LABID
+g <- df2gtypes(strata.df[, c("LABID", "Haplotypes")],
+               ploidy = Ploidy,
+               strata.col = NULL,
+               loc.col = 2,
+               schemes = strata.df,
+               sequences = mtdna,
+               description = description)
+  #schemes = strata.df allows any column in the strata file to be used for re-stratification
+  #prior to analysis.
+
+#set the stratum to be used in downstream analyses (see "stratum" setting above)
+g <- stratify(g,stratum)
+```
+
+## summarize data for unique haplotypes 
+  (No. samples, No. haplotypes, Hap diversity, % unique haps)
+```{r}
+summary(g)
+summaryfile<- summary(g) 
+sf.df <- as.data.frame(summaryfile$strata.smry)
+write.csv(sf.df, paste(description,"_",stratum,"_seq_summary.csv",sep=""))
+#only writes strata summary (No. samples, alleles, heterozygosity),
+  #not sequence summary (length, a,g,c,t frequencies)
+```
+
+## transpose haplotype frequencies and combine with lat/lon positions for population pie charts
+```{r}
+# transpose the rows/columns of the haplotype frequency dataframe (rows = locations, columns = haplotypes)
+t_hap_freq<-hap_freq %>%
+  gather("population", "value", 2:ncol(hap_freq)) %>%
+  spread(X, value)
+
+pie <- merge(positions, t_hap_freq)
+pie[1:13,1:7]
+
+# adjust latitudes if too close
+pie2<-pie
+pie2$Longitude_360[11]<-pie2$Longitude_360[11]-0.5
+pie2$Latitude[11]<-pie2$Latitude[11]-0.5
+pie2[1:13,1:7]
+```
+
+
+
+## Get map and set range limits
+```{r}
+worldmap <- map_data("world2")
+setnames(worldmap, c("X","Y","PID","POS","region","subregion"))
+xlim<-c(231,247) #limit the longitude range of the map (in 0 - 360 degrees)
+ylim<-c(33,53) #limit the latitude range of the map
+#dist<- data.frame(x=c(-128,-116),y=c(32,53))
+```
+
+## Plot map
+```{r}
+m <- ggplot() + 
+#  geom_rect(aes(xmin=0, xmax=360, ymin=-40, ymax=50), fill="grey80", alpha=0.5) + #this creates that shaded region on the map, you probably want to comment it out
+  geom_polygon(data=worldmap,aes(X,Y,group=PID),fill = "grey70", color="grey70") + #this is the base map
+  coord_fixed(ylim=ylim, xlim=xlim) +
+    geom_scatterpie(data = pie2,  #this is the code that makes the pie charts (package=scatterpie)
+                  aes(Longitude_360, Latitude, r = 0.5),
+                  cols = c("CR01",	"CR02",	"CR03",	"CR12",	"CR14",	"CR04",	"CR08",	"CR07",	"CR11",	
+                           "CR10",	"CR13",	"CR15",	"CR16"), #selected haplotypes with ≥5 copies in total pop.
+                  alpha = 1) +
+                    scale_fill_manual(
+                      breaks = c("CR01",	"CR02",	"CR03",	"CR12",	"CR14",	"CR04",	"CR08",	"CR07",	"CR11",	
+                           "CR10",	"CR13",	"CR15",	"CR16"),
+                      labels = c("CR01",	"CR02",	"CR03",	"CR12",	"CR14",	"CR04",	"CR08",	"CR07",	"CR11",	
+                           "CR10",	"CR13",	"CR15",	"CR16"),
+                      values = c("CR01" = "red",	
+                                 "CR02" = "green",	
+                                 "CR03" = "blue",	
+                                 "CR12" = "gold",	
+                                 "CR14" = "cyan",	
+                                 "CR04" = "magenta",	
+                                 "CR08" = "darkolivegreen4",	
+                                 "CR07" = "lightblue",	
+                                 "CR11" = "lightpink2",
+                                 "CR10" = "gray30",	
+                                 "CR13" = "white",	
+                                 "CR15" = "darkorange2",	
+                                 "CR16" = "turquoise")
+                    ) +
+                    #labs(title = "",
+                         #subtitle = "",
+                         #caption = "",
+                         #fill = NULL) +
+                    coord_fixed(ratio = 1, xlim = xlim, ylim = ylim, expand = FALSE) +
+                    theme_bw() +
+                    theme(legend.position = c(0.96, 0.02),
+                          legend.justification = c(1, 0),
+                          panel.grid = element_blank(),
+                          panel.border = element_blank(),
+                          axis.title = element_blank(),
+                          axis.text = element_blank(),
+                          axis.ticks = element_blank())
+
+pdf(file=paste0(stratum,"_hapfreq_pie_chart_map.pdf"), width = 5, height = 7, paper = "USr")
+m
+dev.off()
+m
+```
+
+
+## Save data
+```{r}
+save.image(file=paste0(stratum, "_mtDNA_freq_map.Rdata"))
+```
